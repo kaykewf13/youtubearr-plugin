@@ -1,7 +1,7 @@
 {
   "id": "youtubearr",
   "name": "YouTubearr",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "api_version": "1.0.0",
   "repository": "m3ue/youtubearr-m3ue",
   "description": "Monitor YouTube channels for livestreams and auto-create/remove channels. Zero API quota — uses yt-dlp.",
@@ -35,8 +35,16 @@
       "label": "Monitored YouTube Channels",
       "type": "textarea",
       "default": "",
-      "required": true,
-      "helper_text": "One channel per line. Format: @handle, @handle=BaseNumber, or @handle=BaseNumber:TitleFilter\n\nExamples:\n@NASA=92\n@RyanHallYall=90\n@VirtualRailfan=91:Horseshoe|La Grange\n\nTitle filter is a case-insensitive regex. Channels without =Number are auto-assigned from Starting Channel Number."
+      "required": false,
+      "helper_text": "One channel handle per line. Format: @handle, @handle=BaseNumber, or @handle=BaseNumber:TitleFilter\n\nExamples:\n@NASA=92\n@RyanHallYall=90\n@VirtualRailfan=91:Horseshoe|La Grange\n\nAll currently live streams for each handle are detected. Title filter is a case-insensitive regex. Channels without =Number are auto-assigned from Starting Channel Number."
+    },
+    {
+      "id": "monitored_streams",
+      "label": "Monitored Streams (Direct URLs)",
+      "type": "textarea",
+      "default": "",
+      "required": false,
+      "helper_text": "Optional. One YouTube URL or bare video ID per line. These specific streams are checked each cycle — a channel is created when live and removed when ended (same behaviour as handle monitoring). Lines starting with # are ignored.\n\nExamples:\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ\ndQw4w9WgXcQ\nhttps://youtu.be/dQw4w9WgXcQ"
     },
     {
       "id": "stream_profile_id",

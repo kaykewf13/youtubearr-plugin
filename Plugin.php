@@ -84,8 +84,10 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
         }
 
         $channelLines = $this->parseMonitoredChannels($settings['monitored_channels'] ?? '');
-        if (empty($channelLines)) {
-            return PluginActionResult::failure('No channels configured. Add YouTube channel handles to the Monitored Channels setting.');
+        $monitoredStreamLines = $this->parseMonitoredStreams($settings['monitored_streams'] ?? '');
+
+        if (empty($channelLines) && empty($monitoredStreamLines)) {
+            return PluginActionResult::failure('No channels or streams configured. Add YouTube channel handles to Monitored Channels or direct URLs to Monitored Streams.');
         }
 
         $added = 0;
@@ -94,6 +96,7 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
         $errors = [];
         $cookiesFile = $this->getCookiesFile($profile);
 
+        // --- Handle-based monitoring: scan each channel's /streams playlist ---
         foreach ($channelLines as $entry) {
             $handle = $entry['handle'];
             $baseNumber = $entry['base_number'];
@@ -101,21 +104,59 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
 
             $context->info("Checking @{$handle} for live streams…");
 
-            $metadata = $this->fetchChannelLiveMetadata($ytdlp, $handle, $settings, $cookiesFile);
+            $streams = $this->fetchAllLiveStreams($ytdlp, $handle, $settings, $cookiesFile);
 
-            if (! $metadata) {
-                $context->info("@{$handle}: not currently live");
-
-                continue;
-            }
-
-            if ($titleFilter && ! preg_match('/'.$titleFilter.'/i', $metadata['title'])) {
-                $context->info("@{$handle}: live but title '{$metadata['title']}' does not match filter '{$titleFilter}'");
+            if (empty($streams)) {
+                $context->info("@{$handle}: no live streams found");
 
                 continue;
             }
 
-            $videoId = $metadata['video_id'];
+            $context->info("@{$handle}: found ".count($streams).' live stream(s)');
+
+            foreach ($streams as $metadata) {
+                if ($titleFilter && ! preg_match('/'.$titleFilter.'/i', $metadata['title'])) {
+                    $context->info("@{$handle}: skipping '{$metadata['title']}' — does not match filter '{$titleFilter}'");
+
+                    continue;
+                }
+
+                $videoId = $metadata['video_id'];
+
+                $existing = Channel::where('user_id', $userId)
+                    ->whereJsonContains('info->plugin', self::PLUGIN_MARKER)
+                    ->whereJsonContains('info->youtube_video_id', $videoId)
+                    ->first();
+
+                if ($existing) {
+                    $context->info("@{$handle}: '{$metadata['title']}' already tracked as channel #{$existing->channel}");
+                    $skipped++;
+
+                    continue;
+                }
+
+                $channelNumber = $this->nextChannelNumber($userId, $settings, $handle, $baseNumber);
+
+                try {
+                    $this->createChannel($metadata, $handle, $settings, $userId, $channelNumber);
+                    $context->info("@{$handle}: added '{$metadata['title']}' as channel #{$channelNumber}");
+                    $added++;
+                } catch (\Throwable $e) {
+                    $context->error("@{$handle}: failed to create channel for '{$metadata['title']}' — {$e->getMessage()}");
+                    $errors[] = "@{$handle}: {$e->getMessage()}";
+                }
+            }
+        }
+
+        // --- Direct stream monitoring: check each specific video ID/URL ---
+        foreach ($monitoredStreamLines as $videoIdOrUrl) {
+            $videoId = $this->extractVideoId($ytdlp, $videoIdOrUrl, $cookiesFile);
+
+            if (! $videoId) {
+                $errors[] = 'Could not extract video ID from: '.substr($videoIdOrUrl, 0, 60);
+
+                continue;
+            }
 
             $existing = Channel::where('user_id', $userId)
                 ->whereJsonContains('info->plugin', self::PLUGIN_MARKER)
@@ -123,21 +164,26 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
                 ->first();
 
             if ($existing) {
-                $context->info("@{$handle}: already tracked as channel #{$existing->channel}");
                 $skipped++;
 
                 continue;
             }
 
-            $channelNumber = $this->nextChannelNumber($userId, $settings, $handle, $baseNumber);
+            $metadata = $this->fetchVideoMetadata($ytdlp, $videoId, $settings, $cookiesFile);
+
+            if (! $metadata || ! $metadata['is_live']) {
+                continue;
+            }
+
+            $channelNumber = $this->nextChannelNumber($userId, $settings, $metadata['youtube_handle'], null);
 
             try {
-                $this->createChannel($metadata, $handle, $settings, $userId, $channelNumber);
-                $context->info("@{$handle}: added '{$metadata['title']}' as channel #{$channelNumber}");
+                $this->createChannel($metadata, $metadata['youtube_handle'], $settings, $userId, $channelNumber);
+                $context->info("Added '{$metadata['title']}' as channel #{$channelNumber} (direct stream)");
                 $added++;
             } catch (\Throwable $e) {
-                $context->error("@{$handle}: failed to create channel — {$e->getMessage()}");
-                $errors[] = "@{$handle}: {$e->getMessage()}";
+                $context->error("Failed to create channel for {$videoId}: {$e->getMessage()}");
+                $errors[] = $e->getMessage();
             }
         }
 
@@ -313,7 +359,7 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
     // -------------------------------------------------------------------------
 
     /**
-     * @param  array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, is_live: bool}  $metadata
+     * @param  array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, logo: string, is_live: bool}  $metadata
      */
     private function createChannel(
         array $metadata,
@@ -355,6 +401,7 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
             'is_vod' => false,
             'enabled' => true,
             'shift' => 0,
+            'logo_internal' => $metadata['logo'] ?? '',
             'logo_type' => 'channel',
             'enable_proxy' => true,
             'user_id' => $userId,
@@ -455,41 +502,74 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
     // -------------------------------------------------------------------------
 
     /**
-     * Fetch live stream metadata for a YouTube channel's /live URL.
+     * Fetch all currently live streams for a YouTube channel handle by scanning
+     * the channel's /streams playlist tab with --flat-playlist.
      *
-     * @return array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, is_live: bool}|null
+     * Returns an empty array if the channel has no live streams or yt-dlp fails.
+     *
+     * @return list<array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, youtube_handle: string, logo: string, is_live: bool}>
      */
-    private function fetchChannelLiveMetadata(string $ytdlp, string $handle, array $settings, ?string $cookiesFile): ?array
+    private function fetchAllLiveStreams(string $ytdlp, string $handle, array $settings, ?string $cookiesFile): array
     {
         $handle = ltrim($handle, '@');
-        $url = "https://www.youtube.com/@{$handle}/live";
-        $format = $this->qualityToFormat($settings['stream_quality'] ?? 'best');
+        $url = "https://www.youtube.com/@{$handle}/streams";
 
-        $info = $this->runYtDlpJson($ytdlp, $url, $cookiesFile, $format, 45);
+        $cmd = [$ytdlp, '--flat-playlist', '--dump-json', '--no-download', '--no-warnings'];
 
-        if (! $info) {
-            return null;
+        if ($cookiesFile) {
+            $cmd[] = '--cookies';
+            $cmd[] = $cookiesFile;
         }
 
-        $isLive = ($info['is_live'] ?? false) || ($info['live_status'] ?? '') === 'is_live';
-        if (! $isLive) {
-            return null;
+        $cmd[] = $url;
+
+        $result = $this->runProcess($cmd, 60);
+
+        if ($result['exit'] !== 0 || trim($result['stdout']) === '') {
+            return [];
         }
 
-        return [
-            'video_id' => $info['id'] ?? '',
-            'title' => $info['title'] ?? 'Untitled',
-            'youtube_channel_id' => $info['channel_id'] ?? '',
-            'youtube_channel_name' => $info['channel'] ?? $info['uploader'] ?? $handle,
-            'youtube_handle' => $handle,
-            'is_live' => true,
-        ];
+        $streams = [];
+
+        foreach (explode("\n", trim($result['stdout'])) as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $entry = json_decode($line, true);
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $isLive = ($entry['live_status'] ?? '') === 'is_live' || ($entry['is_live'] ?? false);
+            if (! $isLive) {
+                continue;
+            }
+
+            $videoId = $entry['id'] ?? '';
+            if ($videoId === '') {
+                continue;
+            }
+
+            $streams[] = [
+                'video_id' => $videoId,
+                'title' => $entry['title'] ?? 'Untitled',
+                'youtube_channel_id' => $entry['channel_id'] ?? '',
+                'youtube_channel_name' => $entry['channel'] ?? $entry['uploader'] ?? $handle,
+                'youtube_handle' => $handle,
+                'logo' => $this->extractBestThumbnail($entry),
+                'is_live' => true,
+            ];
+        }
+
+        return $streams;
     }
 
     /**
      * Fetch metadata for a specific video ID.
      *
-     * @return array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, youtube_handle: string, is_live: bool}|null
+     * @return array{video_id: string, title: string, youtube_channel_id: string, youtube_channel_name: string, youtube_handle: string, logo: string, is_live: bool}|null
      */
     private function fetchVideoMetadata(string $ytdlp, string $videoId, array $settings, ?string $cookiesFile): ?array
     {
@@ -511,6 +591,7 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
             'youtube_channel_id' => $info['channel_id'] ?? '',
             'youtube_channel_name' => $info['channel'] ?? $info['uploader'] ?? '',
             'youtube_handle' => ltrim((string) $handle, '@'),
+            'logo' => $info['thumbnail'] ?? $this->extractBestThumbnail($info),
             'is_live' => $isLive,
         ];
     }
@@ -542,6 +623,11 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
             if (preg_match($pattern, $url, $m)) {
                 return $m[1];
             }
+        }
+
+        // Bare 11-character video ID (no URL)
+        if (preg_match('/^[a-zA-Z0-9_-]{11}$/', trim($url))) {
+            return trim($url);
         }
 
         // Fallback: ask yt-dlp to print the ID
@@ -648,6 +734,31 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
     }
 
     /**
+     * Parse the monitored_streams textarea into a list of video IDs or URLs.
+     *
+     * Each non-blank, non-comment line is treated as either:
+     *   - a full YouTube URL (youtube.com/watch?v=..., youtu.be/..., etc.)
+     *   - a bare 11-character video ID
+     *
+     * @return list<string>
+     */
+    private function parseMonitoredStreams(string $raw): array
+    {
+        $entries = [];
+
+        foreach (explode("\n", $raw) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+
+            $entries[] = $line;
+        }
+
+        return $entries;
+    }
+
+    /**
      * Resolve the user ID and StreamProfile for this plugin run in a single DB query.
      *
      * For manual/hook triggers the context user is set directly.
@@ -700,6 +811,31 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
         if ($path && file_exists($path)) {
             @unlink($path);
         }
+    }
+
+    /**
+     * Extract the best-quality thumbnail URL from a yt-dlp JSON entry.
+     *
+     * Full metadata provides a scalar `thumbnail` key. Flat-playlist output
+     * provides a `thumbnails` array of objects with `url`, `height`, `width`.
+     * We sort by height (or width) descending and return the first URL.
+     */
+    private function extractBestThumbnail(array $entry): string
+    {
+        // Full metadata: scalar thumbnail key is reliable
+        if (! empty($entry['thumbnail']) && is_string($entry['thumbnail'])) {
+            return $entry['thumbnail'];
+        }
+
+        // Flat-playlist: thumbnails array
+        $thumbnails = $entry['thumbnails'] ?? [];
+        if (! is_array($thumbnails) || empty($thumbnails)) {
+            return '';
+        }
+
+        usort($thumbnails, fn ($a, $b) => ($b['height'] ?? $b['width'] ?? 0) <=> ($a['height'] ?? $a['width'] ?? 0));
+
+        return $thumbnails[0]['url'] ?? '';
     }
 
     private function qualityToFormat(string $quality): string
