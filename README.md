@@ -2,7 +2,7 @@
 
 An official plugin for [m3u-editor](https://github.com/m3ue/m3u-editor) that monitors YouTube channels for active livestreams and automatically creates or removes custom channels — zero API quota required.
 
-Inspired by the [Dispatcharr YouTubearr plugin](https://github.com/Dispatcharr/Dispatcharr).
+Inspired by the [Dispatcharr YouTubearr plugin](https://github.com/jeff-gooch/Youtubearr).
 
 ## How it works
 
