@@ -1,0 +1,161 @@
+{
+  "id": "youtubearr",
+  "name": "YouTubearr",
+  "version": "1.0.0",
+  "api_version": "1.0.0",
+  "repository": "m3ue/youtubearr-m3ue",
+  "description": "Monitor YouTube channels for livestreams and auto-create/remove channels. Zero API quota — uses yt-dlp.",
+  "entrypoint": "Plugin.php",
+  "class": "AppLocalPlugins\\Youtubearr\\Plugin",
+  "capabilities": [
+    "channel_processor",
+    "scheduled"
+  ],
+  "hooks": [],
+  "permissions": [
+    "db_read",
+    "db_write",
+    "network_egress",
+    "queue_jobs",
+    "scheduled_runs",
+    "filesystem_write"
+  ],
+  "schema": {
+    "tables": []
+  },
+  "data_ownership": {
+    "tables": [],
+    "directories": [],
+    "files": [],
+    "default_cleanup_policy": "preserve"
+  },
+  "settings": [
+    {
+      "id": "monitored_channels",
+      "label": "Monitored YouTube Channels",
+      "type": "textarea",
+      "default": "",
+      "helper_text": "One channel per line. Format: @handle, @handle=BaseNumber, or @handle=BaseNumber:TitleFilter\n\nExamples:\n@NASA=92\n@RyanHallYall=90\n@VirtualRailfan=91:Horseshoe|La Grange\n\nTitle filter is a case-insensitive regex. Channels without =Number are auto-assigned from Starting Channel Number."
+    },
+    {
+      "id": "stream_profile_id",
+      "label": "Stream Profile (yt-dlp)",
+      "type": "model_select",
+      "model": "App\\Models\\StreamProfile",
+      "label_attribute": "name",
+      "scope": "owned",
+      "required": true,
+      "helper_text": "Select a yt-dlp Stream Profile to apply to created channels. Cookies configured on this profile will also be used for live stream detection."
+    },
+    {
+      "id": "target_custom_playlist_id",
+      "label": "Target Playlist",
+      "type": "model_select",
+      "model": "App\\Models\\CustomPlaylist",
+      "label_attribute": "name",
+      "scope": "owned",
+      "required": false,
+      "helper_text": "Custom playlist to add YouTube channels to. Leave empty to create standalone custom channels."
+    },
+    {
+      "id": "channel_group",
+      "label": "Channel Group",
+      "type": "text",
+      "default": "YouTube Live",
+      "helper_text": "Group name for created channels. The group will be created automatically if it does not exist."
+    },
+    {
+      "id": "stream_quality",
+      "label": "Stream Quality",
+      "type": "select",
+      "default": "best",
+      "options": [
+        {"value": "best", "label": "Best Available"},
+        {"value": "1080p", "label": "1080p"},
+        {"value": "720p", "label": "720p"},
+        {"value": "480p", "label": "480p"}
+      ],
+      "helper_text": "Quality preference used when checking live stream metadata via yt-dlp."
+    },
+    {
+      "id": "auto_cleanup",
+      "label": "Auto-cleanup Ended Streams",
+      "type": "boolean",
+      "default": true,
+      "helper_text": "Automatically delete channels when their YouTube livestream ends. Runs during each monitoring cycle."
+    },
+    {
+      "id": "starting_channel_number",
+      "label": "Starting Channel Number",
+      "type": "number",
+      "default": 2000,
+      "helper_text": "First channel number to assign. Each new stream increments from here."
+    },
+    {
+      "id": "channel_number_increment",
+      "label": "Channel Number Increment",
+      "type": "number",
+      "default": 1,
+      "helper_text": "How much to increment the channel number for each new stream."
+    },
+    {
+      "id": "channel_numbering_mode",
+      "label": "Channel Numbering Mode",
+      "type": "select",
+      "default": "sequential",
+      "options": [
+        {"value": "sequential", "label": "Sequential (2000, 2001, 2002)"},
+        {"value": "decimal", "label": "Decimal (90.1, 90.2, 90.3)"}
+      ],
+      "helper_text": "Decimal mode groups streams from the same YouTube channel together using the channel's BaseNumber. Sequential mode uses a global counter."
+    },
+    {
+      "id": "schedule_enabled",
+      "label": "Enable Automatic Monitoring",
+      "type": "boolean",
+      "default": false,
+      "helper_text": "Run monitoring automatically on the schedule below. Requires the scheduler to be running (php artisan schedule:run)."
+    },
+    {
+      "id": "schedule_cron",
+      "label": "Monitor Schedule (cron)",
+      "type": "text",
+      "default": "*/15 * * * *",
+      "helper_text": "Cron expression for automatic monitoring. Default: every 15 minutes. Examples: */5 * * * * (every 5 min), 0 * * * * (hourly)."
+    }
+  ],
+  "actions": [
+    {
+      "id": "check_now",
+      "label": "Check Now",
+      "dry_run": false,
+      "fields": []
+    },
+    {
+      "id": "add_manual",
+      "label": "Add Stream Manually",
+      "dry_run": false,
+      "fields": [
+        {
+          "id": "manual_url",
+          "label": "YouTube URL(s)",
+          "type": "text",
+          "required": true,
+          "helper_text": "One or more YouTube livestream URLs (newline or comma-separated)."
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "label": "Cleanup Ended Streams",
+      "dry_run": false,
+      "fields": []
+    },
+    {
+      "id": "reset_all",
+      "label": "Reset All Channels",
+      "dry_run": false,
+      "fields": []
+    }
+  ]
+}
