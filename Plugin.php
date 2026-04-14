@@ -590,7 +590,7 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
      *
      *   @handle=BaseNumber:TitleFilter
      *
-     * @return array<int, array{handle: string, base_number: int|null, title_filter: string|null}>
+     * @return list<array{handle: string, base_number: int|null, title_filter: string|null}>
      */
     private function parseMonitoredChannels(string $raw): array
     {
@@ -615,7 +615,11 @@ class Plugin implements ChannelProcessorPluginInterface, PluginInterface, Schedu
             }
 
             if ($handle) {
-                $entries[] = compact('handle', 'baseNumber', 'titleFilter');
+                $entries[] = [
+                    'handle'       => $handle,
+                    'base_number'  => $baseNumber,
+                    'title_filter' => $titleFilter,
+                ];
             }
         }
 
